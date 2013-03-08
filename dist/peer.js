@@ -1,4 +1,4 @@
-/*! peerjs.js build:0.1.0, development. Copyright(c) 2013 Michelle Bu <michelle@michellebu.com> */
+/*! peerjs.js build:0.1.7, development. Copyright(c) 2013 Michelle Bu <michelle@michellebu.com> */
 (function(exports){
 var binaryFeatures = {};
 binaryFeatures.useBlobBuilder = (function(){
@@ -1249,6 +1249,7 @@ Peer.prototype._handleServerJSONMessage = function(message) {
       this._abort('unavailable-id', 'ID `'+this.id+'` is taken');
       break;
     case 'OFFER':
+      console.log('OFFER')
       var options = {
         metadata: payload.metadata,
         serialization: payload.serialization,
@@ -1257,6 +1258,7 @@ Peer.prototype._handleServerJSONMessage = function(message) {
         config: this._options.config
       };
       var connection = new DataConnection(this.id, peer, this._socket, options);
+      connection.initialize();
       this._attachConnectionListeners(connection);
       this.connections[peer] = connection;
       this.emit('connection', connection, payload.metadata);
@@ -1359,6 +1361,8 @@ Peer.prototype.connect = function(peer, options) {
   this.connections[peer] = connection;
   if (!this.id) {
     this._queued.push(connection);
+  } else {
+    connection.initialize();
   }
   return connection;
 };
@@ -1397,10 +1401,6 @@ function DataConnection(id, peer, socket, options) {
   this._originator = (options.sdp === undefined);
   this._socket = socket;
   this._sdp = options.sdp;
-
-  if (!!this.id) {
-    this.initialize();
-  }
 };
 
 util.inherits(DataConnection, EventEmitter);
@@ -1412,10 +1412,6 @@ DataConnection.prototype.initialize = function(id, socket) {
   if (!!socket) {
     this._socket = socket;
   }
-  // Firefoxism: connectDataConnection ports.
-  /*if (util.browserisms === 'Firefox') {
-    this._firefoxPortSetup();
-  }*/
 
   // Set up PeerConnection.
   this._startPeerConnection();
@@ -1425,7 +1421,8 @@ DataConnection.prototype.initialize = function(id, socket) {
 
   // Listen for negotiation needed
   // ** Chrome only.
-  if (util.browserisms !== 'Firefox' && !!this.id) {
+  //if (util.browserisms !== 'Firefox' && !!this.id) {
+  if (!!this.id) {
     this._setupOffer();
   }
 
@@ -1437,11 +1434,6 @@ DataConnection.prototype.initialize = function(id, socket) {
     this.handleSDP(this._sdp, 'OFFER');
   }
 
-  // Makes offer if Firefox
-  /*if (util.browserisms === 'Firefox') {
-    this._firefoxAdditional();
-  }*/
-
   // No-op this.
   this.initialize = function() {};
 };
@@ -1450,10 +1442,15 @@ DataConnection.prototype.initialize = function(id, socket) {
 DataConnection.prototype._setupOffer = function() {
   var self = this;
   util.log('Listening for `negotiationneeded`');
-  this._pc.onnegotiationneeded = function() {
-    util.log('`negotiationneeded` triggered');
-    self._makeOffer();
-  };
+  if (util.browserisms !== 'Firefox') {
+    this._pc.onnegotiationneeded = function() {
+      util.log('`negotiationneeded` triggered');
+      self._makeOffer();
+    };
+  } else if (!this._sdp) {
+    console.log(this.id);
+    this._makeOffer();
+  }
 };
 
 
@@ -1487,6 +1484,9 @@ DataConnection.prototype._setupDataChannel = function() {
 DataConnection.prototype._startPeerConnection = function() {
   util.log('Creating RTCPeerConnection');
   this._pc = new RTCPeerConnection(this._options.config, { optional:[ { RtpDataChannels: true } ]});
+    this._pc.onconnection = function() {
+      console.log('oc')
+    }
 };
 
 
@@ -1509,23 +1509,6 @@ DataConnection.prototype._setupIce = function() {
 };
 
 
-/*DataConnection.prototype._firefoxPortSetup = function() {
-  if (!DataConnection.usedPorts) {
-    DataConnection.usedPorts = [];
-  }
-  this.localPort = util.randomPort();
-  while (DataConnection.usedPorts.indexOf(this.localPort) != -1) {
-    this.localPort = util.randomPort();
-  }
-  this.remotePort = util.randomPort();
-  while (this.remotePort === this.localPort ||
-      DataConnection.usedPorts.indexOf(this.localPort) != -1) {
-    this.remotePort = util.randomPort();
-  }
-  DataConnection.usedPorts.push(this.remotePort);
-  DataConnection.usedPorts.push(this.localPort);
-}*/
-
 DataConnection.prototype._configureDataChannel = function() {
   var self = this;
   
@@ -1536,6 +1519,8 @@ DataConnection.prototype._configureDataChannel = function() {
     util.log('Data channel connection success');
     self.open = true;
     self.emit('open');
+    // Nullify because we no longer need any remaining ICE from the STUN server.
+    self._pc.onicecandidate = null;
   };
   if (this._reliable) {
     this._reliable.onmessage = function(msg) {
@@ -1551,17 +1536,6 @@ DataConnection.prototype._configureDataChannel = function() {
   };
 };
 
-
-/** Decide whether to handle Firefoxisms. */
-/*DataConnection.prototype._firefoxAdditional = function() {
-  var self = this;
-  getUserMedia({ audio: true, fake: true }, function(s) {
-    self._pc.addStream(s);
-    if (self._originator) {
-      self._makeOffer();
-    }
-  }, function(err) { util.log('Could not getUserMedia'); });
-};*/
 
 DataConnection.prototype._makeOffer = function() {
   var self = this;
@@ -1600,6 +1574,8 @@ DataConnection.prototype._makeAnswer = function() {
         },
         dst: self.peer
       });
+      //FIREFOX
+      self._pc.connectDataConnection(5001, 5000);
     }, function(err) {
       self.emit('error', err);
       util.log('Failed to setLocalDescription, ', err)
@@ -1695,25 +1671,17 @@ DataConnection.prototype.send = function(data) {
 };
 
 DataConnection.prototype.handleSDP = function(sdp, type) {
-  if (util.browserisms != 'Firefox') {
+  //if (util.browserisms != 'Firefox') {
     sdp = new RTCSessionDescription(sdp);
-  }
+  //}
   var self = this;
   this._pc.setRemoteDescription(sdp, function() {
     util.log('Set remoteDescription: ' + type);
-    // Firefoxism
-    /**if (type === 'ANSWER' && util.browserisms === 'Firefox') {
-      self._pc.connectDataConnection(self.localPort, self.remotePort);
-      self._socket.send({
-        type: 'PORT',
-        dst: self.peer,
-        payload: {
-          remote: self.localPort,
-          local: self.remotePort
-        }
-      });
-    } else*/ if (type === 'OFFER') {
+    if (type === 'OFFER') {
       self._makeAnswer();
+    } else {
+      //FIREFOX
+      self._pc.connectDataConnection(5000, 5001);
     }
   }, function(err) {
     self.emit('error', err);
