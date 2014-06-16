@@ -107,6 +107,12 @@
             "description": "Can be <code>binary</code> (default), <code>binary-utf8</code>, <code>json</code>, or <code>none</code>. Can be accessed with <a href='#dataconnection-serialization'><code>dataConnection.serialization</code></a>.<span class='tip'><code>binary-utf8</code> will take a performance hit because of the way UTF8 strings are packed into binary format.</span>"
           },
           {
+            "name": "sdpTransform",
+            "type": "function",
+            "snippet": "function(type, sdp) { /* returns transformed sdp */ }",
+            "description": "A function that returns a (transformed) SDP-formatted string. The function will be passed the type (<code>'offer'</code> or <code>'answer'</code>) as the first argument and the original SDP string as the second argument."
+          },
+          {
             "name": "reliable",
             "type": "boolean",
             "description": "Whether the underlying data channels should be reliable (e.g. for large file transfers) or not (e.g. for gaming or streaming). Defaults to <code>false</code>.<span class='warn'>Setting reliable to true will use a shim for incompatible browsers (Chrome 30 and below only) and thus may not offer full performance.</span>"
