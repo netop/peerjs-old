@@ -1535,7 +1535,7 @@ var util = {
 
     var binaryBlob = false;
     var sctp = false;
-    var onnegotiationneeded = !!window.webkitRTCPeerConnection;;
+    var onnegotiationneeded = !!window.webkitRTCPeerConnection;
 
     var pc, dc;
     try {
