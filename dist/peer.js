@@ -130,6 +130,7 @@ DataConnection.prototype._handleDataMessage = function(e) {
 
     chunkInfo.data[data.n] = data.data;
     chunkInfo.count += 1;
+    this._chunkedData[id] = chunkInfo;
 
     if (chunkInfo.total === chunkInfo.count) {
       // Clean up before making the recursive call to `_handleDataMessage`.
@@ -140,7 +141,6 @@ DataConnection.prototype._handleDataMessage = function(e) {
       this._handleDataMessage({data: data});
     }
 
-    this._chunkedData[id] = chunkInfo;
     return;
   }
 
@@ -153,6 +153,8 @@ DataConnection.prototype._handleDataMessage = function(e) {
 
 /** Allows user to close connection. */
 DataConnection.prototype.close = function() {
+
+  this._buffer = [];
   if (!this.open) {
     return;
   }
@@ -408,13 +410,14 @@ Negotiator._idPrefix = 'pc_';
 Negotiator.startConnection = function(connection, options) {
   var pc = Negotiator._getPeerConnection(connection, options);
 
+  // Set the connection's PC.
+  connection.pc = connection.peerConnection = pc;
+
   if (connection.type === 'media' && options._stream) {
     // Add the stream.
     pc.addStream(options._stream);
   }
 
-  // Set the connection's PC.
-  connection.pc = connection.peerConnection = pc;
   // What do we need to do now?
   if (options.originator) {
     if (connection.type === 'data') {
@@ -595,9 +598,17 @@ Negotiator.cleanup = function(connection) {
 
   var pc = connection.pc;
 
-  if (!!pc && (pc.readyState !== 'closed' || pc.signalingState !== 'closed')) {
+  if (!!pc && ((pc.readyState && pc.readyState !== 'closed') || pc.signalingState !== 'closed')) {
     pc.close();
     connection.pc = null;
+  }
+
+  // FIX: clean global reference to avoid leak.
+  if(this.pcs[connection.type] && this.pcs[connection.type][connection.peer]) {
+    for(var internalConnectionId in this.pcs[connection.type][connection.peer]) {
+      this.pcs[connection.type][connection.peer][internalConnectionId] === pc &&
+        delete this.pcs[connection.type][connection.peer][internalConnectionId];
+    }
   }
 }
 
@@ -808,7 +819,7 @@ util.inherits(Peer, EventEmitter);
 // websockets.)
 Peer.prototype._initializeServerConnection = function() {
   var self = this;
-  this.socket = new Socket(this.options.secure, this.options.host, this.options.port, this.options.path, this.options.key);
+  this.socket = new Socket(this.options.secure, this.options.host, this.options.port, this.options.path, this.options.key, this.options.wsport);
   this.socket.on('message', function(data) {
     self._handleMessage(data);
   });
@@ -900,7 +911,9 @@ Peer.prototype._handleMessage = function(message) {
       break;
 
     case 'EXPIRE': // The offer sent to a peer has expired without response.
-      this.emitError('peer-unavailable', 'Could not connect to peer ' + peer);
+      var errorDisconnect = new Error('Could not connect to peer ' + peer);
+      errorDisconnect.peerId = peer;
+      this.emitError('peer-unavailable', errorDisconnect);
       break;
     case 'OFFER': // we should consider switching this to CALL/CONNECT, but this is the least breaking option.
       var connectionId = payload.connectionId;
@@ -1109,6 +1122,10 @@ Peer.prototype._cleanupPeer = function(peer) {
   for (var j = 0, jj = connections.length; j < jj; j += 1) {
     connections[j].close();
   }
+
+  // FIX: delete from global map to avoid leak
+  delete Negotiator.pcs['data'][peer];
+  delete Negotiator.pcs['media'][peer];
 };
 
 /**
@@ -1206,8 +1223,10 @@ var EventEmitter = require('eventemitter3');
  * An abstraction on top of WebSockets and XHR streaming to provide fastest
  * possible connection for peers.
  */
-function Socket(secure, host, port, path, key) {
-  if (!(this instanceof Socket)) return new Socket(secure, host, port, path, key);
+function Socket(secure, host, port, path, key, wsport) {
+  if (!(this instanceof Socket)) return new Socket(secure, host, port, path, key, wsport);
+
+  wsport = wsport || port;
 
   EventEmitter.call(this);
 
@@ -1218,7 +1237,7 @@ function Socket(secure, host, port, path, key) {
   var httpProtocol = secure ? 'https://' : 'http://';
   var wsProtocol = secure ? 'wss://' : 'ws://';
   this._httpUrl = httpProtocol + host + ':' + port + path + key;
-  this._wsUrl = wsProtocol + host + ':' + port + path + 'peerjs?key=' + key;
+  this._wsUrl = wsProtocol + host + ':' + wsport + path + 'peerjs?key=' + key;
 }
 
 util.inherits(Socket, EventEmitter);
@@ -1406,9 +1425,15 @@ Socket.prototype.send = function(data) {
 }
 
 Socket.prototype.close = function() {
-  if (!this.disconnected && this._wsOpen()) {
-    this._socket.close();
+  if (!this.disconnected) {
     this.disconnected = true;
+    if(this._wsOpen()) {
+      this._socket.close();
+    }
+    if(this._http) {
+        this._http.abort();
+    }
+    clearTimeout(this._timeout);
   }
 }
 
@@ -1510,7 +1535,7 @@ var util = {
 
     var binaryBlob = false;
     var sctp = false;
-    var onnegotiationneeded = !!window.webkitRTCPeerConnection;
+    var onnegotiationneeded = !!window.webkitRTCPeerConnection;;
 
     var pc, dc;
     try {
@@ -1542,7 +1567,7 @@ var util = {
       var reliablePC = new RTCPeerConnection(defaultConfig, {});
       try {
         var reliableDC = reliablePC.createDataChannel('_PEERJSRELIABLETEST', {});
-        sctp = reliableDC.reliable;
+        sctp = reliableDC.reliable || reliableDC.ordered;
       } catch (e) {
       }
       reliablePC.close();
@@ -1555,6 +1580,7 @@ var util = {
 
     // FIXME: this is not great because in theory it doesn't work for
     // av-only browsers (?).
+    /*
     if (!onnegotiationneeded && data) {
       // sync default check.
       var negotiationPC = new RTCPeerConnection(defaultConfig, {optional: [{RtpDataChannels: true}]});
@@ -1571,6 +1597,7 @@ var util = {
         negotiationPC.close();
       }, 1000);
     }
+    */
 
     if (pc) {
       pc.close();
