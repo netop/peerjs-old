@@ -155,11 +155,12 @@ DataConnection.prototype._handleDataMessage = function(e) {
 DataConnection.prototype.close = function() {
 
   this._buffer = [];
+  // FIX: cleanup regardless, to avoid leak
+  Negotiator.cleanup(this);
   if (!this.open) {
     return;
   }
   this.open = false;
-  Negotiator.cleanup(this);
   this.emit('close');
 }
 
